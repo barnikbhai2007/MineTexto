@@ -3,6 +3,8 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import Groq from "groq-sdk";
 import crypto from "crypto";
+import http from "http";
+import { Server as SocketIOServer } from "socket.io";
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
@@ -182,6 +184,135 @@ app.get("/api/giveup", (req, res) => {
 });
 
 async function startServer() {
+  const httpServer = http.createServer(app);
+  const io = new SocketIOServer(httpServer, {
+    cors: { origin: "*" }
+  });
+
+  const games = new Map<string, any>();
+
+  io.on("connection", (socket) => {
+    socket.on("join_game", ({ gameId, username }) => {
+      let game = games.get(gameId);
+      if (!game) {
+        // Create new game
+        const secret = MINECRAFT_TERMS[Math.floor(Math.random() * MINECRAFT_TERMS.length)].toLowerCase();
+        game = {
+          id: gameId,
+          secret,
+          players: [],
+          started: false,
+          finished: false
+        };
+        games.set(gameId, game);
+      }
+      
+      if (game.started || game.players.length >= 4) {
+        socket.emit("game_error", { message: game.started ? "Game already started" : "Game full (max 4 players)" });
+        return;
+      }
+
+      const player = {
+        id: socket.id,
+        number: game.players.length + 1,
+        guesses: [],
+        guessCount: 0,
+        finished: false
+      };
+      game.players.push(player);
+      socket.join(gameId);
+      
+      io.to(gameId).emit("game_updated", {
+        players: game.players.map((p: any) => ({ id: p.id, number: p.number, guessCount: p.guessCount, finished: p.finished })),
+        started: game.started,
+        gameId
+      });
+    });
+
+    socket.on("start_game", (gameId) => {
+      const game = games.get(gameId);
+      if (game && game.players.some((p: any) => p.id === socket.id)) {
+        game.started = true;
+        io.to(gameId).emit("game_started");
+      }
+    });
+
+    socket.on("make_guess", async ({ gameId, word }) => {
+      const game = games.get(gameId);
+      if (!game || !game.started) return;
+      const player = game.players.find((p: any) => p.id === socket.id);
+      if (!player || player.finished) return;
+
+      const normWord = normalize(word);
+      if (!normWord) return;
+
+      // Ensure no duplicate guesses
+      if (player.guesses.some((g: any) => g.word === normWord)) return;
+
+      player.guessCount += 1;
+
+      // If correct
+      if (normWord === game.secret) {
+        player.finished = true;
+        player.guesses.push({ word: normWord, rank: 1 });
+        socket.emit("guess_result", { word: normWord, rank: 1 });
+        
+        io.to(gameId).emit("game_updated", {
+          players: game.players.map((p: any) => ({ id: p.id, number: p.number, guessCount: p.guessCount, finished: p.finished })),
+          started: game.started,
+          gameId
+        });
+
+        if (game.players.every((p: any) => p.finished)) {
+          game.finished = true;
+          io.to(gameId).emit("game_ended", {
+            secret: game.secret,
+            winner: [...game.players].sort((a: any, b: any) => a.guessCount - b.guessCount)[0].number
+          });
+        }
+        return;
+      }
+
+      // If incorrect, prompt AI
+      let aiPrompt = `We are playing a Contexto-style game where the secret word is a Minecraft term. The user guessed "${normWord}". The secret word is "${game.secret}". Rank how conceptually or topically similar the guess is to the secret term on a scale of 1 to 32000. 1 is exactly the secret word.`;
+      const response = await generateWithRetry(aiPrompt, "15000").catch(() => ({ text: "15000" }));
+      const textRank = response.text?.trim() || "";
+      let rank = parseInt(textRank.replace(/[^0-9]/g, ""), 10);
+      if (isNaN(rank) || rank <= 1) rank = 15000;
+
+      player.guesses.push({ word: normWord, rank });
+      socket.emit("guess_result", { word: normWord, rank });
+      
+      io.to(gameId).emit("game_updated", {
+        players: game.players.map((p: any) => ({ id: p.id, number: p.number, guessCount: p.guessCount, finished: p.finished })),
+        started: game.started,
+        gameId
+      });
+    });
+
+    socket.on("disconnect", () => {
+      // Find game for player
+      for (const [gameId, game] of games.entries()) {
+        const idx = game.players.findIndex((p: any) => p.id === socket.id);
+        if (idx !== -1) {
+          game.players.splice(idx, 1);
+          if (game.players.length === 0) {
+            games.delete(gameId);
+          } else {
+            // Reassign numbers
+            game.players.forEach((p: any, i: number) => { p.number = i + 1; });
+            io.to(gameId).emit("game_updated", {
+              players: game.players.map((p: any) => ({ id: p.id, number: p.number, guessCount: p.guessCount, finished: p.finished })),
+              started: game.started,
+              gameId
+            });
+          }
+          break;
+        }
+      }
+    });
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
@@ -197,7 +328,7 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
 }
