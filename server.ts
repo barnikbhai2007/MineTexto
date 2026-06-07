@@ -218,13 +218,15 @@ async function startServer() {
         number: game.players.length + 1,
         guesses: [],
         guessCount: 0,
-        finished: false
+        finished: false,
+        abortVote: false,
+        rematchVote: false
       };
       game.players.push(player);
       socket.join(gameId);
       
       io.to(gameId).emit("game_updated", {
-        players: game.players.map((p: any) => ({ id: p.id, number: p.number, guessCount: p.guessCount, finished: p.finished })),
+        players: game.players.map((p: any) => ({ id: p.id, number: p.number, guessCount: p.guessCount, finished: p.finished, abortVote: p.abortVote, rematchVote: p.rematchVote })),
         started: game.started,
         gameId
       });
@@ -232,10 +234,76 @@ async function startServer() {
 
     socket.on("start_game", (gameId) => {
       const game = games.get(gameId);
-      if (game && game.players.some((p: any) => p.id === socket.id)) {
-        game.started = true;
-        io.to(gameId).emit("game_started");
+      if (!game) return;
+      const player = game.players.find((p: any) => p.id === socket.id);
+      
+      // Only player 1 (admin) can start or restart
+      if (player && player.number === 1) {
+        if (game.finished) {
+          // It's a rematch. Check if others are ready.
+          const othersReady = game.players.filter((p: any) => p.number !== 1).every((p: any) => p.rematchVote);
+          if (!othersReady && game.players.length > 1) return;
+          
+          game.secret = MINECRAFT_TERMS[Math.floor(Math.random() * MINECRAFT_TERMS.length)].toLowerCase();
+          game.finished = false;
+          game.started = true;
+          game.players.forEach((p: any) => {
+            p.guesses = [];
+            p.guessCount = 0;
+            p.finished = false;
+            p.abortVote = false;
+            p.rematchVote = false;
+          });
+          io.to(gameId).emit("game_restarted");
+        } else if (!game.started) {
+          game.started = true;
+          io.to(gameId).emit("game_started");
+        }
+        
+        io.to(gameId).emit("game_updated", {
+          players: game.players.map((p: any) => ({ id: p.id, number: p.number, guessCount: p.guessCount, finished: p.finished, abortVote: p.abortVote, rematchVote: p.rematchVote })),
+          started: game.started,
+          gameId
+        });
       }
+    });
+
+    socket.on("vote_abort", (gameId) => {
+      const game = games.get(gameId);
+      if (!game || !game.started || game.finished) return;
+      const player = game.players.find((p: any) => p.id === socket.id);
+      if (!player) return;
+
+      player.abortVote = !player.abortVote;
+      
+      io.to(gameId).emit("game_updated", {
+        players: game.players.map((p: any) => ({ id: p.id, number: p.number, guessCount: p.guessCount, finished: p.finished, abortVote: p.abortVote, rematchVote: p.rematchVote })),
+        started: game.started,
+        gameId
+      });
+
+      if (game.players.every((p: any) => p.abortVote)) {
+        game.finished = true;
+        io.to(gameId).emit("game_ended", {
+          secret: game.secret,
+          winner: null // Represents aborted game
+        });
+      }
+    });
+
+    socket.on("vote_rematch", (gameId) => {
+      const game = games.get(gameId);
+      if (!game) return;
+      const player = game.players.find((p: any) => p.id === socket.id);
+      if (!player) return;
+
+      player.rematchVote = !player.rematchVote;
+      
+      io.to(gameId).emit("game_updated", {
+        players: game.players.map((p: any) => ({ id: p.id, number: p.number, guessCount: p.guessCount, finished: p.finished, abortVote: p.abortVote, rematchVote: p.rematchVote })),
+        started: game.started,
+        gameId
+      });
     });
 
     socket.on("make_guess", async ({ gameId, word }) => {

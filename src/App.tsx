@@ -64,6 +64,15 @@ export default function App() {
         setGameStarted(true);
       });
 
+      newSocket.on("game_restarted", () => {
+        setGameEnded(false);
+        setWin(false);
+        setSecret(null);
+        setWinner(null);
+        setGuesses([]);
+        setGameStarted(true);
+      });
+
       newSocket.on("guess_result", (data) => {
         setLoading(false);
         if (data.rank === 1) {
@@ -339,15 +348,44 @@ export default function App() {
                  <h2 className="text-4xl font-bold text-indigo-400 uppercase tracking-widest">Simulation Ended</h2>
                  <p className="text-xl text-indigo-300 uppercase tracking-wider">The secret was <strong className="text-indigo-100 text-3xl ml-2 animate-pulse">"{secret}"</strong></p>
                  <div className="bg-indigo-900/40 border border-indigo-500/50 p-4 rounded w-full">
-                    <p className="text-2xl text-yellow-400 uppercase tracking-widest font-bold">Player {winner} Wins!</p>
-                    <p className="text-indigo-200 mt-1 uppercase text-sm">Lowest Guess Count</p>
+                    {winner === null ? (
+                      <p className="text-2xl text-yellow-400 uppercase tracking-widest font-bold">Simulation Aborted</p>
+                    ) : (
+                      <>
+                        <p className="text-2xl text-yellow-400 uppercase tracking-widest font-bold">Player {winner} Wins!</p>
+                        <p className="text-indigo-200 mt-1 uppercase text-sm">Lowest Guess Count</p>
+                      </>
+                    )}
                  </div>
-                 <button 
-                  onClick={() => { setMode('menu'); setSocket(null); socket?.disconnect(); setGuesses([]); }}
-                  className="mt-6 px-6 py-3 bg-indigo-900/50 hover:bg-indigo-800 border-2 border-indigo-500 text-indigo-400 text-xl rounded transition-all uppercase tracking-widest"
-                >
-                  Return to Main Menu
-                </button>
+                 <div className="flex flex-col gap-3 w-full">
+                    {myNumber === 1 ? (
+                      <button 
+                        onClick={() => socket?.emit("start_game", gameId)}
+                        disabled={players.filter(p => p.number !== 1).length > 0 && !players.filter(p => p.number !== 1).every(p => p.rematchVote)}
+                        className="w-full px-6 py-3 bg-indigo-600/50 hover:bg-indigo-500 border border-indigo-400 text-indigo-100 text-xl rounded transition-all uppercase tracking-widest disabled:opacity-50"
+                      >
+                        Start Rematch
+                      </button>
+                    ) : (
+                      <button 
+                        onClick={() => socket?.emit("vote_rematch", gameId)}
+                        className={`w-full px-6 py-3 border text-xl rounded transition-all uppercase tracking-widest ${players.find(p => p.id === socket?.id)?.rematchVote ? 'bg-indigo-600/50 border-indigo-400 text-indigo-100' : 'bg-transparent border-indigo-500/50 hover:border-indigo-400 text-indigo-300'}`}
+                      >
+                        {players.find(p => p.id === socket?.id)?.rematchVote ? 'Ready' : 'Vote Rematch'}
+                      </button>
+                    )}
+                    <button 
+                      onClick={() => { setMode('menu'); setSocket(null); socket?.disconnect(); setGuesses([]); }}
+                      className="w-full px-6 py-3 bg-indigo-900/50 hover:bg-indigo-800 border-2 border-indigo-500 text-indigo-400 text-xl rounded transition-all uppercase tracking-widest"
+                    >
+                      Return to Main Menu
+                    </button>
+                 </div>
+                 {players.length > 1 && (
+                    <p className="text-indigo-400 uppercase tracking-widest text-sm">
+                      Ready: {players.filter(p => p.rematchVote || p.number === 1).length}/{players.length}
+                    </p>
+                 )}
               </motion.div>
             ) : win ? (
               <motion.div 
@@ -410,6 +448,14 @@ export default function App() {
                     className="text-red-600/60 hover:text-red-500 transition-colors uppercase tracking-widest text-lg"
                   >
                     Abort
+                  </button>
+                )}
+                {mode === 'multi' && gameStarted && !win && !gameEnded && guesses.length > 0 && (
+                  <button
+                    onClick={() => socket?.emit("vote_abort", gameId)}
+                    className={`transition-colors uppercase tracking-widest text-lg ${players.find(p => p.id === socket?.id)?.abortVote ? 'text-red-500 font-bold' : 'text-red-600/60 hover:text-red-500'}`}
+                  >
+                    Abort ({players.filter(p => p.abortVote).length}/{players.length})
                   </button>
                 )}
                 {mode === 'single' && !win && getMaxHints(guesses.length) - hintsUsed > 0 && (
