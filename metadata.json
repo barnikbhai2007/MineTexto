@@ -1,0 +1,6 @@
+{
+  "name": "MineContexto",
+  "description": "Guess the secret Minecraft term in this context-based game! Find words conceptually close to the secret using AI-generated ranks.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
