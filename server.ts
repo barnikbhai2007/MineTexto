@@ -113,7 +113,8 @@ Output ONLY the integer rank. No markdown, no letters, no punctuation, no explan
     const response = await generateWithRetry(prompt, "15000");
 
     const textRank = response.text?.trim() || "";
-    let rank = parseInt(textRank.replace(/[^0-9]/g, ""), 10);
+    const match = textRank.match(/\d+/);
+    let rank = match ? parseInt(match[0], 10) : 15000;
     
     if (isNaN(rank)) {
       rank = 15000; // fallback if parsing fails
@@ -274,10 +275,11 @@ async function startServer() {
       }
 
       // If incorrect, prompt AI
-      let aiPrompt = `We are playing a Contexto-style game where the secret word is a Minecraft term. The user guessed "${normWord}". The secret word is "${game.secret}". Rank how conceptually or topically similar the guess is to the secret term on a scale of 1 to 32000. 1 is exactly the secret word.`;
+      let aiPrompt = `We are playing a Contexto-style game where the secret word is a Minecraft term. The user guessed "${normWord}". The secret word is "${game.secret}". Rank how conceptually or topically similar the guess is to the secret term on a scale of 1 to 32000. 1 is exactly the secret word. Output ONLY an integer number. No explanation.`;
       const response = await generateWithRetry(aiPrompt, "15000").catch(() => ({ text: "15000" }));
       const textRank = response.text?.trim() || "";
-      let rank = parseInt(textRank.replace(/[^0-9]/g, ""), 10);
+      const match = textRank.match(/\d+/);
+      let rank = match ? parseInt(match[0], 10) : 15000;
       if (isNaN(rank) || rank <= 1) rank = 15000;
 
       player.guesses.push({ word: normWord, rank });
@@ -328,9 +330,18 @@ async function startServer() {
     });
   }
 
-  httpServer.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
+  if (process.env.VERCEL) {
+    // Vercel serverless environment doesn't use the httpServer
+    module.exports = app;
+  } else {
+    httpServer.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+    });
+  }
 }
 
-startServer();
+if (!process.env.VERCEL) {
+  startServer();
+}
+
+export default app;
