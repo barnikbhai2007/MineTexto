@@ -53,7 +53,7 @@ const MINECRAFT_TERMS = [
 // In-memory session store
 interface Session {
   secret: string;
-  guesses: Record<string, number>;
+  guesses: Record<string, { rank: number, explanation: string }>;
 }
 const sessions = new Map<string, Session>();
 
@@ -62,7 +62,7 @@ const normalize = (w: string) => w.trim().toLowerCase();
 
 app.post("/api/new-game", (req, res) => {
   const sessionId = crypto.randomUUID();
-  const secret = MINECRAFT_TERMS[Math.floor(Math.random() * MINECRAFT_TERMS.length)];
+  const secret = MINECRAFT_TERMS[Math.floor(Math.random() * MINECRAFT_TERMS.length)].toLowerCase();
   sessions.set(sessionId, { secret, guesses: {} });
   res.json({ sessionId });
 });
@@ -80,17 +80,17 @@ app.post("/api/guess", async (req, res) => {
 
     // If already guessed, return cached
     if (session.guesses[normWord] !== undefined) {
-      return res.json({ word: normWord, rank: session.guesses[normWord] });
+      return res.json({ word: normWord, rank: session.guesses[normWord].rank, explanation: session.guesses[normWord].explanation });
     }
 
     if (normWord === normSecret) {
-      session.guesses[normWord] = 1;
-      return res.json({ word: normWord, rank: 1 });
+      session.guesses[normWord] = { rank: 1, explanation: "Correct guess!" };
+      return res.json({ word: normWord, rank: 1, explanation: session.guesses[normWord].explanation });
     }
 
     // Build context string from history to maintain consistency
-    const sortedGuesses = Object.entries(session.guesses).sort((a, b) => a[1] - b[1]);
-    const previousGuessesStr = sortedGuesses.map(([w, r]) => `${w}: ${r}`).join("\n");
+    const sortedGuesses = Object.entries(session.guesses).sort((a, b) => a[1].rank - b[1].rank);
+    const previousGuessesStr = sortedGuesses.map(([w, data]) => `${w}: ${data.rank}`).join("\n");
 
     const prompt = `You are an expert Minecraft game scoring system for a Contexto adaptation.
 The secret Minecraft term the player is trying to guess is: "${session.secret}"
@@ -103,29 +103,38 @@ Rules for ranks:
 501-1000: Somewhat related (similar item type, loosely associated).
 1001-32000: Progressively less related to completely unrelated.
 
-CRITICAL: Do NOT output perfectly round numbers (e.g., avoid 500, 1000, 2500, 5000). Generate precise, random-looking granular numbers (e.g., 478, 932, 2145, 13498) to make the scoring feel organic.
+CRITICAL: Do NOT output perfectly round numbers (e.g., avoid 500, 1000). Generate precise, random-looking granular numbers (e.g., 478, 13498).
 
-Previous guesses and their ranks in this session for context (try to rank the new guess consistently relative to these):
+Previous guesses and their ranks in this session for context:
 ${previousGuessesStr || "None"}
 
-Output ONLY the integer rank. No markdown, no letters, no punctuation, no explanations. It must be a plain number between 1 and 32000.`;
+Output ONLY valid JSON payload with "rank" and a short "explanation" of why it got this rank relative to the secret. No markdown or other text.
+{"rank": 1234, "explanation": "Short sentence explaining the relationship."}`;
 
-    const response = await generateWithRetry(prompt, "15000");
+    const response = await generateWithRetry(prompt, '{"rank": 15000, "explanation": "Unknown"}');
 
-    const textRank = response.text?.trim() || "";
-    const match = textRank.match(/\d+/);
-    let rank = match ? parseInt(match[0], 10) : 15000;
+    let rank = 15000;
+    let explanation = "Could not evaluate.";
+    try {
+      // Find JSON block if it has markdown
+      const match = response.text?.match(/\{[\s\S]*?\}/);
+      if (match) {
+        const parsed = JSON.parse(match[0]);
+        rank = parsed.rank;
+        explanation = parsed.explanation || explanation;
+      }
+    } catch(e) {}
     
     if (isNaN(rank)) {
-      rank = 15000; // fallback if parsing fails
+      rank = 15000;
     } else if (rank <= 1) {
       rank = 2; // don't award 1 unless exactly matched above
     } else if (rank > 32000) {
       rank = 32000;
     }
 
-    session.guesses[normWord] = rank;
-    res.json({ word: normWord, rank });
+    session.guesses[normWord] = { rank, explanation };
+    res.json({ word: normWord, rank, explanation });
   } catch (error) {
     console.error("Error making guess:", error);
     res.status(500).json({ error: "Failed to process guess" });
@@ -140,12 +149,12 @@ app.post("/api/hint", async (req, res) => {
     const session = sessions.get(sessionId);
     if (!session) return res.status(404).json({ error: "Session not found" });
 
-    const sortedGuesses = Object.entries(session.guesses).sort((a, b) => a[1] - b[1]);
+    const sortedGuesses = Object.entries(session.guesses).sort((a, b) => a[1].rank - b[1].rank);
     const bestGuess = sortedGuesses.length > 0 ? sortedGuesses[0] : null;
 
     const prompt = `You are providing a hint for a Minecraft Contexto game.
 The secret Minecraft term is: "${session.secret}"
-${bestGuess ? `The player's best guess so far is "${bestGuess[0]}" with a rank of ${bestGuess[1]}.` : "The player has no good guesses yet."}
+${bestGuess ? `The player's best guess so far is "${bestGuess[0]}" with a rank of ${bestGuess[1].rank}.` : "The player has no good guesses yet."}
 
 Provide ONE Minecraft-related word or short phrase that is conceptually closer to the secret word than the player's best guess.
 DO NOT reveal the exact secret word.
@@ -155,21 +164,19 @@ Output ONLY the hint word or phrase. No markdown, no explanations.`;
 
     let hint = response.text?.trim() || "Dirt"; // fallback
 
-    // Calculate a fake rank for the hint (halfway between best guess and 1)
     let hintRank = 1500;
-    if (bestGuess && bestGuess[1] > 2) {
-      hintRank = Math.floor(bestGuess[1] / 2);
+    if (bestGuess && bestGuess[1].rank > 2) {
+      hintRank = Math.floor(bestGuess[1].rank / 2);
     }
 
-    // cache it so if they guess it, they get the rank
     const normHint = normalize(hint);
     if (session.guesses[normHint] === undefined) {
-      session.guesses[normHint] = hintRank;
+      session.guesses[normHint] = { rank: hintRank, explanation: "Generated as a hint." };
     } else {
-      hintRank = session.guesses[normHint];
+      hintRank = session.guesses[normHint].rank;
     }
 
-    res.json({ hint: normHint, rank: hintRank });
+    res.json({ hint: normHint, rank: hintRank, explanation: session.guesses[normHint].explanation });
   } catch (error) {
     console.error("Error generating hint:", error);
     res.status(500).json({ error: "Failed to generate hint" });
@@ -323,8 +330,8 @@ async function startServer() {
       // If correct
       if (normWord === game.secret) {
         player.finished = true;
-        player.guesses.push({ word: normWord, rank: 1 });
-        socket.emit("guess_result", { word: normWord, rank: 1 });
+        player.guesses.push({ word: normWord, rank: 1, explanation: "Correct guess!" });
+        socket.emit("guess_result", { word: normWord, rank: 1, explanation: "Correct guess!" });
         
         io.to(gameId).emit("game_updated", {
           players: game.players.map((p: any) => ({ id: p.id, number: p.number, guessCount: p.guessCount, finished: p.finished })),
@@ -343,15 +350,30 @@ async function startServer() {
       }
 
       // If incorrect, prompt AI
-      let aiPrompt = `We are playing a Contexto-style game where the secret word is a Minecraft term. The user guessed "${normWord}". The secret word is "${game.secret}". Rank how conceptually or topically similar the guess is to the secret term on a scale of 1 to 32000. 1 is exactly the secret word. Output ONLY an integer number. No explanation.`;
-      const response = await generateWithRetry(aiPrompt, "15000").catch(() => ({ text: "15000" }));
-      const textRank = response.text?.trim() || "";
-      const match = textRank.match(/\d+/);
-      let rank = match ? parseInt(match[0], 10) : 15000;
+      let aiPrompt = `You are an expert Minecraft game scoring system for a Contexto adaptation.
+The secret Minecraft term the player is trying to guess is: "${game.secret}"
+The player just guessed: "${normWord}"
+
+You must assign a numerical rank from 1 to 32000 indicating semantic similarity.
+Output ONLY valid JSON payload with "rank" and a short "explanation" of why it got this rank relative to the secret. No markdown or other text.
+{"rank": 1234, "explanation": "Short sentence explaining the relationship."}`;
+      
+      const response = await generateWithRetry(aiPrompt, '{"rank": 15000, "explanation": "Unknown"}');
+      let rank = 15000;
+      let explanation = "Could not evaluate.";
+      try {
+        const match = response.text?.match(/\{[\s\S]*?\}/);
+        if (match) {
+          const parsed = JSON.parse(match[0]);
+          rank = parsed.rank;
+          explanation = parsed.explanation || explanation;
+        }
+      } catch(e) {}
+      
       if (isNaN(rank) || rank <= 1) rank = 15000;
 
-      player.guesses.push({ word: normWord, rank });
-      socket.emit("guess_result", { word: normWord, rank });
+      player.guesses.push({ word: normWord, rank, explanation });
+      socket.emit("guess_result", { word: normWord, rank, explanation });
       
       io.to(gameId).emit("game_updated", {
         players: game.players.map((p: any) => ({ id: p.id, number: p.number, guessCount: p.guessCount, finished: p.finished })),

@@ -80,7 +80,7 @@ export default function App() {
         }
         setGuesses(prev => {
           if (prev.some(g => g.word === data.word)) return prev;
-          const newGuess = { word: data.word, rank: data.rank, isLatest: true };
+          const newGuess = { word: data.word, rank: data.rank, explanation: data.explanation, isLatest: true };
           return [newGuess, ...prev.map(g => ({ ...g, isLatest: false }))];
         });
       });
@@ -140,7 +140,7 @@ export default function App() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inputValue.trim() || cooldownRemaining > 0) return;
+    if (!inputValue.trim() || (mode === 'multi' && cooldownRemaining > 0)) return;
 
     if (mode === 'multi') {
       if (!socket || !gameStarted || win) return;
@@ -157,8 +157,6 @@ export default function App() {
     try {
       setLoading(true);
       setError(null);
-      setLastGuessTime(Date.now());
-      setCooldownRemaining(10);
       
       const res = await fetch('/api/guess', {
         method: 'POST',
@@ -175,7 +173,7 @@ export default function App() {
       }
       
       setGuesses(prev => {
-        const next = [{ word: data.word, rank: data.rank, isLatest: true }, ...prev.map(g => ({ ...g, isLatest: false }))];
+        const next = [{ word: data.word, rank: data.rank, explanation: data.explanation, isLatest: true }, ...prev.map(g => ({ ...g, isLatest: false }))];
         return next;
       });
       
@@ -207,7 +205,7 @@ export default function App() {
       
       setGuesses(prev => {
         if (prev.some(g => g.word.toLowerCase() === data.hint.toLowerCase())) return prev;
-        const next = [{ word: data.hint, rank: data.rank, isLatest: true }, ...prev.map(g => ({ ...g, isLatest: false }))];
+        const next = [{ word: data.hint, rank: data.rank, explanation: data.explanation, isLatest: true }, ...prev.map(g => ({ ...g, isLatest: false }))];
         return next;
       });
     } catch (e: any) {
@@ -419,15 +417,15 @@ export default function App() {
                   value={inputValue}
                   onChange={(e) => setInputValue(e.target.value)}
                   placeholder="ENTER_QUERY..."
-                  disabled={loading || win || (mode === 'single' && !sessionId) || cooldownRemaining > 0}
+                  disabled={loading || win || (mode === 'single' && !sessionId) || (mode === 'multi' && cooldownRemaining > 0)}
                   className="flex-1 bg-black border border-green-700/50 rounded px-4 py-3 placeholder-green-800 focus:outline-none focus:border-green-500 focus:shadow-[0_0_10px_rgba(34,197,94,0.3)] transition-all text-3xl tracking-widest disabled:opacity-50 text-green-400 uppercase"
                 />
                 <button 
                   type="submit" 
-                  disabled={loading || !inputValue.trim() || win || (mode === 'single' && !sessionId) || cooldownRemaining > 0}
+                  disabled={loading || !inputValue.trim() || win || (mode === 'single' && !sessionId) || (mode === 'multi' && cooldownRemaining > 0)}
                   className="px-6 bg-green-900/40 border border-green-700/50 hover:bg-green-800 hover:border-green-500 disabled:bg-black disabled:text-green-900 text-green-400 rounded transition-all flex items-center justify-center uppercase disabled:opacity-50 min-w-[80px]"
                 >
-                  {cooldownRemaining > 0 ? (
+                  {mode === 'multi' && cooldownRemaining > 0 ? (
                     <span className="text-2xl font-bold">{cooldownRemaining}s</span>
                   ) : loading ? (
                     <Loader2 className="w-8 h-8 animate-spin" />
@@ -496,21 +494,28 @@ export default function App() {
                     initial={{ opacity: 0, scale: 0.95, y: -10 }}
                     animate={{ opacity: 1, scale: 1, y: 0 }}
                     layout
-                    className={`relative overflow-hidden rounded w-full flex items-center justify-between px-4 text-xl h-14 border-l-4 ${getColorClass(g.rank)} ${g.isLatest ? 'shadow-[0_0_10px_rgba(255,255,255,0.1)] bg-green-900/10' : ''}`}
+                    className={`relative overflow-hidden rounded w-full flex flex-col px-4 py-3 border-l-4 ${getColorClass(g.rank)} ${g.isLatest ? 'shadow-[0_0_10px_rgba(255,255,255,0.1)] bg-green-900/10' : ''}`}
                   >
-                    <div className="flex items-center gap-4 min-w-0 flex-1">
-                      {g.isLatest ? (
-                        <span className="text-sm tracking-widest text-green-300 opacity-80 shrink-0 uppercase border border-green-500/30 px-1 rounded bg-black">Last</span>
-                      ) : (
-                        <span className="w-10"></span>
-                      )}
-                      <span className="tracking-widest uppercase truncate mr-4 text-2xl">
-                        {g.word}
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-4 min-w-0 flex-1">
+                        {g.isLatest ? (
+                          <span className="text-sm tracking-widest text-green-300 opacity-80 shrink-0 uppercase border border-green-500/30 px-1 rounded bg-black">Last</span>
+                        ) : (
+                          <span className="w-10"></span>
+                        )}
+                        <span className="tracking-widest uppercase truncate mr-4 text-2xl">
+                          {g.word}
+                        </span>
+                      </div>
+                      <span className="opacity-90 text-3xl tracking-widest font-bold">
+                        {g.rank.toLocaleString()}
                       </span>
                     </div>
-                    <span className="opacity-90 text-3xl tracking-widest font-bold">
-                      {g.rank.toLocaleString()}
-                    </span>
+                    {((mode === 'single' && win) || (mode === 'multi' && gameEnded)) && g.explanation && (
+                      <div className="mt-2 text-sm text-green-300/80 italic pl-14">
+                        ↳ {g.explanation}
+                      </div>
+                    )}
                   </motion.div>
                 ))}
               </AnimatePresence>
